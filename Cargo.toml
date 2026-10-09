@@ -1,0 +1,53 @@
+[package]
+name = "fsearch"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Whole-disk file search for Windows: fuzzy names, typo tolerance, indexed content grep."
+
+[lib]
+name = "fsearch"
+path = "src/lib.rs"
+
+[[bin]]
+name = "fsearch"
+path = "src/main.rs"
+
+[[bin]]
+name = "fsearchd"
+path = "src/bin/fsearchd.rs"
+
+[dependencies]
+rayon = "1.12"
+memchr = "2.8"
+memmap2 = "0.9"
+regex = "1.13"
+regex-syntax = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Only the host backend needs it (MSG_PEEK for a non-consuming readiness check).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Memory",
+    "Win32_System_Pipes",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_System_Console",
+    "Win32_System_RemoteDesktop",
+    "Win32_System_WindowsProgramming",
+    "Win32_System_Diagnostics_Debug",
+] }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+debug = 1

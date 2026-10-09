@@ -1,0 +1,67 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # The engine is platform-agnostic above src/os/, so the whole thing — index
+  # layout, ranking, live diffs, trigram content index, daemon protocol — is
+  # tested here against the host backend.
+  test-host:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets
+      - run: cargo test -- --test-threads=1
+
+  # The shipping binaries. Native MSVC, so what users get is built by the real
+  # Windows toolchain rather than cross-linked.
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked
+      - uses: actions/upload-artifact@v4
+        with:
+          name: fsearch-windows-x64
+          path: |
+            target/release/fsearch.exe
+            target/release/fsearchd.exe
+          if-no-files-found: error
+
+  # The same suite, but `cfg(windows)` selects the real Win32 backend: bulk
+  # directory listing, ReadDirectoryChangesW, named pipes, VirtualAlloc.
+  # Non-blocking: CI runners have no real volumes to crawl, so this is a
+  # signal, not a gate.
+  verify-windows:
+    runs-on: windows-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test -- --test-threads=1
+
+  # Proves the cross-build path in cross.sh still works for contributors who
+  # are not on Windows.
+  cross-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64-posix
+      - run: rustup target add x86_64-pc-windows-gnu
+      - run: ./cross.sh

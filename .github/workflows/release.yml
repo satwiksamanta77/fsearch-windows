@@ -1,0 +1,108 @@
+name: release
+
+# Push a tag like `v0.1.0` and this builds the Windows binaries and publishes
+# them as a GitHub Release. It authenticates with the GITHUB_TOKEN that
+# Actions issues per-run (see `permissions:` below), so no personal access
+# token is stored anywhere and none needs to be handed to anyone.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish (e.g. v0.1.0). Leave blank to build artifacts only."
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets
+      - run: cargo test -- --test-threads=1
+
+  build:
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked
+
+      - name: Stage the release archive
+        shell: pwsh
+        run: |
+          $ver = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
+          $stage = "fsearch-$ver-windows-x64"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          Copy-Item target/release/fsearch.exe, target/release/fsearchd.exe, README.md, PORTING.md, LICENSE $stage/
+          Compress-Archive -Path "$stage/*" -DestinationPath "$stage.zip" -Force
+          # Also ship the bare exes: some people just want to drop them on PATH.
+          Copy-Item target/release/fsearch.exe, target/release/fsearchd.exe .
+          Write-Output "STAGE=$stage" >> $env:GITHUB_ENV
+          Get-FileHash "$stage.zip", fsearch.exe, fsearchd.exe -Algorithm SHA256 |
+            ForEach-Object { "{0}  {1}" -f $_.Hash.ToLower(), (Split-Path $_.Path -Leaf) } |
+            Set-Content SHA256SUMS.txt
+          Get-Content SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x64
+          path: |
+            ${{ env.STAGE }}.zip
+            fsearch.exe
+            fsearchd.exe
+            SHA256SUMS.txt
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    # A manual run with no tag just leaves the artifacts on the run summary.
+    if: startsWith(github.ref, 'refs/tags/') || github.event.inputs.tag != ''
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-x64
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true
+          files: |
+            *.zip
+            fsearch.exe
+            fsearchd.exe
+            SHA256SUMS.txt
+          body: |
+            Windows x64 build.
+
+            - `fsearch.exe` — the CLI (console subsystem, so the shell waits for it).
+            - `fsearchd.exe` — the same program built without a console; this is what
+              `install --login` starts at sign-in, so no window ever flashes.
+
+            Install:
+
+            ```
+            fsearch.exe install            # copies both to %LOCALAPPDATA%\Programs\FSearch
+            fsearch.exe install --login    # ... and starts the daemon at sign-in
+            ```
+
+            Then `fsearch <query>`. The first run crawls every fixed volume; after
+            that a restart only relists the folders that changed. See README.md for
+            the query language and PORTING.md for how this differs from the macOS
+            original.
