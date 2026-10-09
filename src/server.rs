@@ -211,17 +211,21 @@ fn kind_name(k: u8) -> &'static str {
 /// about to be closed under it, and the first real request would then fail.
 pub fn connect(dir: &Path) -> std::io::Result<Conn> {
     std::fs::create_dir_all(dir).ok();
+    // Bounded by a deadline, not a retry count: each attempt can spend the
+    // whole ping timeout, so a count alone could mean minutes of waiting.
+    let deadline = Instant::now() + Duration::from_secs(25);
     let mut spawned = false;
-    for _ in 0..100 {
+    while Instant::now() < deadline {
         if let Some(mut c) = os::connect_once() {
             if ping(&mut c) {
                 return Ok(c);
             }
         } else if !spawned {
             spawned = true;
+            crate::diag::trace("daemon not running; starting it");
             os::spawn_daemon(&dir.join("daemon.log"))?;
         }
-        std::thread::sleep(Duration::from_millis(30));
+        std::thread::sleep(Duration::from_millis(50));
     }
     Err(std::io::Error::new(std::io::ErrorKind::ConnectionRefused, format!("cannot reach {}", os::endpoint())))
 }
@@ -232,7 +236,7 @@ fn ping(c: &mut Conn) -> bool {
     if writeln!(c, "{{\"op\":\"ping\"}}").and_then(|_| c.flush()).is_err() {
         return false;
     }
-    if !c.wait_readable(Duration::from_secs(3)) {
+    if !c.wait_readable(Duration::from_millis(1500)) {
         return false;
     }
     let mut line = String::new();

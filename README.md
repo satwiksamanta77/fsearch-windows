@@ -34,6 +34,22 @@ with the constant factors set by your disk and `ReadDirectoryChangesW`.
 | first crawl of the disk | ~1 min, once |
 | restart | seconds: only folders whose mtime moved are relisted |
 
+## Interactive
+
+Double-clicking `fsearch.exe` — or running `fsearch -i` — drops you into a
+prompt instead of printing help and exiting:
+
+```
+fsearch> readme
+C:\users\me\dev\fsearch\README.md                        (3 ms)
+
+fsearch> grep:todo
+...
+```
+
+Queries, `status`, `doctor`, `install` and `uninstall` all work there. The
+first run crawls every disk; `status` shows how far along it is.
+
 ## If it does not start
 
 Run:

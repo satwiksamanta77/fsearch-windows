@@ -13,6 +13,7 @@ const USAGE: &str = "usage:
   fsearch serve                 run the daemon in the foreground
   fsearch status
   fsearch doctor                check each subsystem and report which one fails
+  fsearch -i                    interactive prompt (what double-clicking gives you)
   fsearch install [--login]      copy to %LOCALAPPDATA%\\Programs\\FSearch; --login also starts
                                 the daemon at sign-in (run as administrator to index everything)
   fsearch uninstall             remove the sign-in entry (keeps the index)
@@ -40,7 +41,9 @@ pub fn run() {
     os::utf8_console();
     let args: Vec<String> = std::env::args().skip(1).collect();
     crate::diag::trace(&format!("args: {}", args.join(" ")));
-    let pause = !matches!(args.first().map(String::as_str), Some("serve") | Some("stdio") | Some("__touch") | Some("__delete"));
+    let interactive_launch = (args.is_empty() && os::console_is_ours()) || matches!(args.first().map(String::as_str), Some("-i" | "--interactive"));
+    let pause =
+        !interactive_launch && !matches!(args.first().map(String::as_str), Some("serve") | Some("stdio") | Some("__touch") | Some("__delete"));
     let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dispatch(&args)));
     if pause {
         hold_console();
@@ -58,7 +61,15 @@ pub fn run() {
 
 fn dispatch(args: &[String]) {
     match args.first().map(String::as_str) {
-        None | Some("-h" | "--help") => eprintln!("{USAGE}"),
+        None => {
+            if os::console_is_ours() {
+                interactive();
+            } else {
+                eprintln!("{USAGE}");
+            }
+        }
+        Some("-h" | "--help") => eprintln!("{USAGE}"),
+        Some("-i" | "--interactive") => interactive(),
         Some("serve") => server::serve(data_dir(), home()),
         Some("stdio") => stdio(),
         Some("status") => print_one(&serde_json::json!({"op": "status"}), true),
@@ -102,36 +113,107 @@ fn hold_console() {
 }
 
 fn print_one(req: &serde_json::Value, raw: bool) {
-    crate::diag::trace(&format!("request: {req}"));
-    let mut s = server::connect(&data_dir()).unwrap_or_else(|e| die(&format!("cannot reach daemon: {e}")));
-    crate::diag::trace("connected to the daemon");
-    if writeln!(s, "{req}").and_then(|_| s.flush()).is_err() {
-        die("lost the connection to the daemon");
+    if let Err(e) = try_request(req, raw) {
+        die(&e);
     }
+}
+
+/// One request/response. Errors come back instead of ending the process, so the
+/// interactive prompt can report them and keep going.
+fn try_request(req: &serde_json::Value, raw: bool) -> Result<(), String> {
+    crate::diag::trace(&format!("request: {req}"));
+    let mut s = server::connect(&data_dir()).map_err(|e| format!("cannot reach daemon: {e}"))?;
+    crate::diag::trace("connected to the daemon");
+    writeln!(s, "{req}").and_then(|_| s.flush()).map_err(|_| "lost the connection to the daemon")?;
     let mut line = String::new();
     BufReader::new(&mut s).read_line(&mut line).unwrap_or(0);
     if line.trim().is_empty() {
-        die("daemon closed the connection");
+        return Err("daemon closed the connection".into());
     }
     if raw {
         print!("{line}");
         let _ = std::io::stdout().flush();
-        return;
+        return Ok(());
     }
     let v: serde_json::Value = serde_json::from_str(&line).unwrap_or_default();
     if v["ok"] != true {
-        die(v["error"].as_str().unwrap_or("error"));
+        return Err(v["error"].as_str().unwrap_or("error").to_string());
     }
     let mut out = std::io::stdout().lock();
+    let mut n = 0;
     for h in v["hits"].as_array().into_iter().flatten() {
         let _ = writeln!(out, "{}", h["path"].as_str().unwrap_or(""));
+        n += 1;
     }
     for f in v["files"].as_array().into_iter().flatten() {
         for m in f["matches"].as_array().into_iter().flatten() {
             let _ = writeln!(out, "{}:{}: {}", f["path"].as_str().unwrap_or(""), m["line"], m["text"].as_str().unwrap_or("").trim());
+            n += 1;
         }
     }
     let _ = out.flush();
+    if n == 0 {
+        let _ = writeln!(out, "(no matches)");
+    }
+    Ok(())
+}
+
+/// What double-clicking gets you: the usage, then a prompt. A CLI with no
+/// arguments has nothing to do, and a window that prints help and closes is
+/// indistinguishable from a crash, so stay and take queries instead.
+fn interactive() {
+    println!("{USAGE}");
+    println!();
+    println!("Interactive mode — type a query and press Enter.");
+    println!("  readme            fuzzy name search (typos forgiven)");
+    println!("  ext:rs main       filters: ext: type: kind: in: size: mtime: re: path:");
+    println!("  grep:todo         search inside files   |   sym:name   where it is defined");
+    println!("  status            index progress        |   doctor     self-test");
+    println!("  install           copy beside itself    |   help       this text");
+    println!("First run crawls every disk, which can take a minute; `status` shows progress.");
+    println!("Blank line or `exit` to quit.");
+    let stdin = std::io::stdin();
+    loop {
+        print!("\nfsearch> ");
+        let _ = std::io::stdout().flush();
+        let mut line = String::new();
+        if stdin.read_line(&mut line).unwrap_or(0) == 0 {
+            break;
+        }
+        let line = line.trim();
+        if line.is_empty() || line == "exit" || line == "quit" {
+            break;
+        }
+        match line {
+            "help" | "?" | "-h" | "--help" => println!("{USAGE}"),
+            "status" => {
+                if let Err(e) = try_request(&serde_json::json!({"op": "status"}), false) {
+                    println!("fsearch: {e}");
+                } else {
+                    let _ = try_request(&serde_json::json!({"op": "status"}), true);
+                }
+            }
+            "doctor" => {
+                crate::doctor::run();
+            }
+            "install" => install(false),
+            "uninstall" => uninstall(),
+            _ => {
+                let raw = line.split_whitespace().any(|a| a == "--json");
+                let q: Vec<&str> = line.split_whitespace().filter(|a| *a != "--json").collect();
+                let t = std::time::Instant::now();
+                match try_request(&serde_json::json!({"q": q.join(" ")}), raw) {
+                    Ok(()) => println!("({:.0} ms)", t.elapsed().as_secs_f64() * 1000.0),
+                    Err(e) if e.contains("indexing") => {
+                        println!("fsearch: {e}");
+                        println!("       the first crawl is still running — try `status`, then ask again.");
+                    }
+                    Err(e) => println!("fsearch: {e}"),
+                }
+            }
+        }
+    }
+    println!("bye");
 }
 
 fn stdio() {
