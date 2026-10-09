@@ -34,6 +34,34 @@ with the constant factors set by your disk and `ReadDirectoryChangesW`.
 | first crawl of the disk | ~1 min, once |
 | restart | seconds: only folders whose mtime moved are relisted |
 
+## If it does not start
+
+Run:
+
+```
+fsearch doctor
+```
+
+It exercises each subsystem on its own — volumes, the bulk directory class,
+attributes, memory maps, the index layout, the named pipe, the change stream,
+the trigram index, the registry — and prints the real OS error next to whatever
+fails, instead of a window that closes before you can read it.
+
+Two log files sit next to the index in `%LOCALAPPDATA%\FSearch`:
+
+- `trace.log` — a timestamped line per startup stage, flushed before the next
+  one runs, so the last line is the stage that died.
+- `crash.log` — Rust panics with a backtrace, and faults *below* Rust (a bad
+  pointer, a stack overflow) with the exception code and address, caught by a
+  structured exception handler that allocates nothing.
+
+Double-clicking `fsearch.exe` now waits for a keypress before closing, so usage
+text and errors stay on screen. Set `FSEARCH_TRACE=1` for per-stage detail.
+
+The shipped binaries link the C runtime statically, so they need no Visual C++
+Redistributable — a missing `VCRUNTIME140.dll` otherwise looks exactly like a
+crash on launch.
+
 ## Queries
 
 ```

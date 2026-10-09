@@ -464,8 +464,12 @@ fn content_loop(shared: &Shared, rx: Receiver<(Vec<Vec<u8>>, Vec<Vec<u8>>)>) {
 fn full_build(shared: &Shared, generation: u64) -> Index {
     let t = Instant::now();
     let started = crate::query::now_secs();
+    crate::diag::trace(&format!("full_build: crawling with {SCAN_THREADS} threads"));
     let ls = walk::scan_volumes(SCAN_THREADS);
+    crate::diag::trace(&format!("full_build: crawled {} listings", ls.len()));
+    crate::diag::trace("full_build: laying out the index");
     let idx = Index::build(ls, generation, started, shared.home.as_bytes());
+    crate::diag::trace(&format!("full_build: {} entries, {} dirs, {} bytes", idx.n, idx.d, idx.bytes()));
     let path = shared.dir.join("index.bin");
     if let Err(e) = idx.save(&path) {
         log(format!("save failed: {e}"));

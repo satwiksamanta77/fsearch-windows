@@ -51,7 +51,7 @@ use windows_sys::Win32::System::Pipes::{
     ConnectNamedPipe, CreateNamedPipeW, PIPE_READMODE_BYTE, PIPE_TYPE_BYTE, PIPE_UNLIMITED_INSTANCES, PIPE_WAIT, PeekNamedPipe, WaitNamedPipeW,
 };
 use windows_sys::Win32::System::Registry::{
-    HKEY, HKEY_CURRENT_USER, KEY_SET_VALUE, REG_SZ, RegCloseKey, RegDeleteValueW, RegOpenKeyExW, RegSetValueExW,
+    HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE, REG_SZ, RegCloseKey, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW,
 };
 use windows_sys::Win32::System::RemoteDesktop::ProcessIdToSessionId;
 use windows_sys::Win32::System::Threading::{
@@ -318,6 +318,11 @@ pub fn read_dir_batch(h: &DirHandle, l: &mut Listing) {
                 loop {
                     let r = unsafe { &*(base.add(off) as *const FILE_ID_BOTH_DIR_INFO) };
                     let nlen = (r.FileNameLength as usize) / 2;
+                    // Never trust FileNameLength: reading past the buffer on a
+                    // corrupt record is an access violation, not an error.
+                    if nlen == 0 || off + NAME_OFF + nlen * 2 > nbytes as usize {
+                        return;
+                    }
                     NAME.with_borrow_mut(|nm| {
                         nm.clear();
                         enc_utf8(nm, unsafe { std::slice::from_raw_parts(r.FileName.as_ptr(), nlen) });
@@ -374,6 +379,10 @@ fn find_fallback(h: &DirHandle, l: &mut Listing) {
     }
     unsafe { FindClose(f) };
 }
+
+/// Offset of `FileName` inside `FILE_ID_BOTH_DIR_INFO`; the struct's size
+/// includes the one-element array, which is not part of the header.
+const NAME_OFF: usize = std::mem::offset_of!(FILE_ID_BOTH_DIR_INFO, FileName);
 
 /// Append one entry unless it is a dot name or too long for the index.
 fn push(l: &mut Listing, name: &[u8], attrs: u32, size: u64, mtime_ft: i64, reparse_tag: u32) {
@@ -502,6 +511,14 @@ pub fn open_regular(path: &[u8]) -> Option<std::fs::File> {
 pub struct Stream {
     stop: Arc<AtomicBool>,
     threads: Mutex<Vec<Option<std::thread::JoinHandle<()>>>>,
+    failures: Arc<Mutex<Vec<String>>>,
+}
+
+impl Stream {
+    /// Why a volume could not be watched. Empty when every volume is live.
+    pub fn failures(&self) -> Vec<String> {
+        self.failures.lock().unwrap().clone()
+    }
 }
 
 unsafe impl Send for Stream {}
@@ -530,13 +547,14 @@ pub fn current_pos() -> crate::os::WatchPos {
 /// arrive on `tx` until the returned stream is dropped.
 pub fn watch(_pos: crate::os::WatchPos, latency: f64, tx: Sender<Vec<Event>>) -> Stream {
     let stop = Arc::new(AtomicBool::new(false));
+    let failures: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
     let mut threads = Vec::new();
     let ms = (latency * 1000.0).clamp(10.0, 5000.0) as u64;
     for v in volumes() {
-        let (s, t) = (stop.clone(), tx.clone());
-        threads.push(std::thread::Builder::new().name("fsearch-watch".into()).spawn(move || watch_volume(v, ms, s, t)).ok());
+        let (s, t, f) = (stop.clone(), tx.clone(), failures.clone());
+        threads.push(std::thread::Builder::new().name("fsearch-watch".into()).spawn(move || watch_volume(v, ms, s, t, f)).ok());
     }
-    Stream { stop, threads: Mutex::new(threads) }
+    Stream { stop, threads: Mutex::new(threads), failures }
 }
 
 fn watch_handle(vol: &[u8]) -> Option<HANDLE> {
@@ -558,18 +576,22 @@ fn watch_handle(vol: &[u8]) -> Option<HANDLE> {
 /// One volume's watch. Owns its handle, and treats every failure as
 /// retryable: a watch that quietly stops would leave the index stale, which
 /// is worse than a missed batch.
-fn watch_volume(vol: Vec<u8>, latency_ms: u64, stop: Arc<AtomicBool>, tx: Sender<Vec<Event>>) {
+fn watch_volume(vol: Vec<u8>, latency_ms: u64, stop: Arc<AtomicBool>, tx: Sender<Vec<Event>>, failures: Arc<Mutex<Vec<String>>>) {
     let vid = vol.first().copied().unwrap_or(b'?') as u32;
+    let name = String::from_utf8_lossy(&vol).into_owned();
     // There is no history to replay: say so at once, and the engine recovers
     // what it missed from folder mtimes instead.
     let _ = tx.send(vec![Event { path: Vec::new(), flags: HISTORY_DONE, id: 0, vol: vid }]);
     let mut h = match watch_handle(&vol) {
         Some(h) => h,
         None => {
-            eprintln!("{} cannot watch {}: {}", crate::query::now_secs(), String::from_utf8_lossy(&vol), io::Error::last_os_error());
+            let e = io::Error::last_os_error();
+            crate::diag::trace(&format!("watch: cannot open {name}: {e}"));
+            failures.lock().unwrap().push(format!("cannot open {name} for change notifications: {e}"));
             return;
         }
     };
+    crate::diag::trace(&format!("watch: {name} armed"));
     let ev = unsafe { CreateEventW(std::ptr::null(), 0, 0, std::ptr::null()) };
     if ev.is_null() {
         unsafe { CloseHandle(h) };
@@ -582,13 +604,24 @@ fn watch_volume(vol: Vec<u8>, latency_ms: u64, stop: Arc<AtomicBool>, tx: Sender
     let mut dirty: HashMap<Vec<u8>, u32> = HashMap::new();
     let mut first: Option<Instant> = None;
     let mut armed = arm(h, &mut buf, filter, &mut ov);
+    crate::diag::trace(&format!("watch: {name} first arm {}", if armed { "ok" } else { "FAILED" }));
     let mut fails = 0u32;
+    let mut seen = 0u64;
+    let mut polls = 0u64;
     while !stop.load(Ordering::Relaxed) {
         if !armed {
             // Re-arm, backing off, and reopen the volume if it will not take.
             fails += 1;
+            if fails == 1 || fails % 25 == 0 {
+                let e = io::Error::last_os_error();
+                crate::diag::trace(&format!("watch: {name} will not arm (attempt {fails}): {e}"));
+                let mut f = failures.lock().unwrap();
+                let msg = format!("ReadDirectoryChangesW on {name} will not arm (attempt {fails}): {e}");
+                if !f.iter().any(|x| x.starts_with(&msg[..msg.len().min(40)])) {
+                    f.push(msg);
+                }
+            }
             if fails == 25 {
-                eprintln!("{} watch on {} is not arming; reopening", crate::query::now_secs(), String::from_utf8_lossy(&vol));
                 unsafe { CloseHandle(h) };
                 h = match watch_handle(&vol) {
                     Some(h) => h,
@@ -602,13 +635,25 @@ fn watch_volume(vol: Vec<u8>, latency_ms: u64, stop: Arc<AtomicBool>, tx: Sender
             armed = arm(h, &mut buf, filter, &mut ov);
             continue;
         }
-        match unsafe { WaitForSingleObject(ev, 40) } {
+        let w = unsafe { WaitForSingleObject(ev, 40) };
+        if polls < 8 || w != WAIT_TIMEOUT {
+            crate::diag::trace_verbose(&format!("watch: {name} wait -> {w:#x} (0=signalled, {WAIT_TIMEOUT:#x}=timeout)"));
+        }
+        polls += 1;
+        match w {
             WAIT_OBJECT_0 => {
                 let mut n = 0u32;
-                if unsafe { GetOverlappedResult(h, &ov, &mut n, 0) } != 0 {
+                let got = unsafe { GetOverlappedResult(h, &ov, &mut n, 0) };
+                crate::diag::trace_verbose(&format!("watch: {name} completed={got} bytes={n} err={}", unsafe { GetLastError() }));
+                if got != 0 {
                     let len = (n as usize).min(WATCH_BUF);
                     let bytes = unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const u8, len) };
+                    let before = dirty.len();
                     collect(bytes, &vol, &mut dirty);
+                    if seen == 0 {
+                        crate::diag::trace(&format!("watch: {name} first batch, {len} bytes, {} folder(s)", dirty.len() - before));
+                    }
+                    seen += 1;
                 } else if unsafe { GetLastError() } == ERROR_NOTIFY_ENUM_DIR {
                     // The buffer overflowed: this volume needs a full rescan.
                     *dirty.entry(vol.clone()).or_default() |= MUST_SCAN_SUBDIRS;
@@ -915,4 +960,37 @@ pub fn canonical(s: &str) -> String {
         },
         _ => c,
     }
+}
+
+/// True when this process is the only one attached to its console, which means
+/// the console was created for us by a double-click and dies when we return.
+pub fn console_is_ours() -> bool {
+    unsafe {
+        if windows_sys::Win32::System::Console::GetConsoleWindow().is_null() {
+            return false;
+        }
+        let mut pids = [0u32; 4];
+        let n = windows_sys::Win32::System::Console::GetConsoleProcessList(pids.as_mut_ptr(), pids.len() as u32);
+        n > 0 && n <= 1
+    }
+}
+
+/// Read-only look at whether the sign-in entry is installed, for `doctor`.
+pub fn login_state() -> String {
+    let sub = wide_raw(r"Software\Microsoft\Windows\CurrentVersion\Run");
+    let mut hk: HKEY = std::ptr::null_mut();
+    if unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, sub.as_ptr(), 0, KEY_QUERY_VALUE, &mut hk) } != ERROR_SUCCESS {
+        return format!("cannot open the Run key ({})", std::io::Error::last_os_error());
+    }
+    let value = wide_raw("FSearch");
+    let mut kind = 0u32;
+    let mut buf = [0u8; 1024];
+    let mut n = buf.len() as u32;
+    let r = unsafe { RegQueryValueExW(hk, value.as_ptr(), std::ptr::null(), &mut kind, buf.as_mut_ptr(), &mut n) };
+    unsafe { RegCloseKey(hk) };
+    if r != ERROR_SUCCESS {
+        return "not set".to_string();
+    }
+    let w: Vec<u16> = buf[..(n as usize).min(buf.len()) / 2].chunks_exact(2).map(|c| u16::from_le_bytes([c[0], c[1]])).collect();
+    format!("set to {:?}", String::from_utf16_lossy(&w).trim_end_matches('\0'))
 }

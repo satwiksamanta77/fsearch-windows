@@ -138,6 +138,29 @@ The algorithms are the original's; the data in them is Windows'.
   that dresses a temp folder up as `C:` so `cargo test` covers everything but
   the syscalls. Neither `fsevents.rs` nor `libc` exists any more.
 
+## Diagnostics
+
+A port whose platform layer nobody has run on the target OS needs to explain
+itself when it fails, so:
+
+- `src/diag.rs` installs a panic hook and a `SetUnhandledExceptionFilter`
+  handler, and traces each startup stage to `%LOCALAPPDATA%\FSearch\trace.log`.
+  The fault handler formats into a stack buffer and writes with raw
+  `CreateFileW`/`WriteFile`, because the thing it reports on may be a corrupted
+  heap. `SetErrorMode(SEM_NOGPFAULTERRORBOX)` keeps Windows' own dialog from
+  being the only evidence.
+- `fsearch doctor` runs every subsystem in turn under `catch_unwind`, so one
+  failure does not hide the next, and reports the OS error for each.
+- `Stream::failures()` carries the reason a volume could not be watched, rather
+  than leaving a silently dead change stream.
+- The binaries link the CRT statically (`.cargo/config.toml` sets
+  `+crt-static` for the MSVC target). Without it the exe imports
+  `VCRUNTIME140.dll` and will not start on a Windows without the VC++
+  Redistributable — which presents as an instant crash with no message.
+- `fsearch.exe` waits for a keypress before exiting when it is the only process
+  on its console (`GetConsoleProcessList` <= 1), i.e. when it was double-clicked
+  and the window would otherwise vanish.
+
 ## Validated
 
 - `cargo test`: 11 tests over index build, path rendering and lookup, fuzzy

@@ -16,9 +16,9 @@ mod imp;
 mod imp;
 
 pub use imp::{
-    Conn, DirHandle, Listener, MAX_DEPTH, MmapAlloc, Stream, canonical, connect_once, current_pos, enable_backup_privileges, endpoint, gated,
-    has_full_disk_access, listen, lstat, no_materialize, open_dir, open_regular, read_dir_batch, release_memory, set_interactive, set_login,
-    set_user_initiated, set_utility, spawn_daemon, utf8_console, volumes, watch,
+    Conn, DirHandle, Listener, MAX_DEPTH, MmapAlloc, Stream, canonical, connect_once, console_is_ours, current_pos, enable_backup_privileges,
+    endpoint, gated, has_full_disk_access, listen, login_state, lstat, no_materialize, open_dir, open_regular, read_dir_batch, release_memory,
+    set_interactive, set_login, set_user_initiated, set_utility, spawn_daemon, utf8_console, volumes, watch,
 };
 
 use std::collections::BTreeMap;
@@ -66,6 +66,17 @@ pub const HISTORY_DONE: u32 = 0x10;
 /// replayable history, so this records what the index was built against
 /// rather than a cursor to resume from.
 pub type WatchPos = BTreeMap<u32, (u64, u64)>;
+
+/// Last watch setup failures, for diagnostics that outlive the stream.
+pub fn watch_failures_note() -> String {
+    LAST_WATCH_FAILURES.lock().unwrap().iter().take(3).map(|f| format!("; {f}")).collect()
+}
+
+static LAST_WATCH_FAILURES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+
+pub(crate) fn record_watch_failures(f: &[String]) {
+    *LAST_WATCH_FAILURES.lock().unwrap() = f.to_vec();
+}
 
 /// Index only this folder, as the `C:` volume. A development and test hook;
 /// unset (the default) means every real volume on the machine.

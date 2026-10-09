@@ -10,6 +10,8 @@
 //! talks to Win32 here instead. See `PORTING.md`.
 
 pub mod content;
+pub mod diag;
+pub mod doctor;
 mod engine;
 pub mod index;
 pub mod live;

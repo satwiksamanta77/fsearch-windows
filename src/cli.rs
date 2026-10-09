@@ -12,6 +12,7 @@ const USAGE: &str = "usage:
   fsearch stdio                 JSON lines on stdin/stdout
   fsearch serve                 run the daemon in the foreground
   fsearch status
+  fsearch doctor                check each subsystem and report which one fails
   fsearch install [--login]      copy to %LOCALAPPDATA%\\Programs\\FSearch; --login also starts
                                 the daemon at sign-in (run as administrator to index everything)
   fsearch uninstall             remove the sign-in entry (keeps the index)
@@ -31,16 +32,51 @@ pub fn data_dir() -> PathBuf {
 }
 
 pub fn run() {
+    // Before anything else: a crash we cannot see is a crash we cannot fix.
+    crate::diag::init();
     os::enable_backup_privileges();
     // Paths are UTF-16 on Windows and a console defaults to the OEM code page,
     // which would mangle non-ASCII names on the way out.
     os::utf8_console();
     let args: Vec<String> = std::env::args().skip(1).collect();
+    crate::diag::trace(&format!("args: {}", args.join(" ")));
+    let pause = !matches!(args.first().map(String::as_str), Some("serve") | Some("stdio") | Some("__touch") | Some("__delete"));
+    let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| dispatch(&args)));
+    if pause {
+        hold_console();
+    }
+    match r {
+        Ok(()) => {}
+        Err(_) => {
+            // diag's panic hook already wrote crash.log; say so where the user
+            // will actually see it.
+            eprintln!("fsearch: internal error — details in {}", crate::diag::crash_path().display());
+            std::process::exit(1);
+        }
+    }
+}
+
+fn dispatch(args: &[String]) {
     match args.first().map(String::as_str) {
         None | Some("-h" | "--help") => eprintln!("{USAGE}"),
         Some("serve") => server::serve(data_dir(), home()),
         Some("stdio") => stdio(),
         Some("status") => print_one(&serde_json::json!({"op": "status"}), true),
+        Some("doctor") => std::process::exit(crate::doctor::run()),
+        // Hidden helpers for `doctor`: make a change from a *second* process,
+        // which is what a search daemon actually observes. Undocumented on
+        // purpose; there is no reason to type these by hand.
+        Some("__touch") => {
+            if let Some(p) = args.get(1) {
+                let _ = std::fs::create_dir_all(std::path::Path::new(p).parent().unwrap_or(std::path::Path::new(".")));
+                let _ = std::fs::write(p, b"probe");
+            }
+        }
+        Some("__delete") => {
+            if let Some(p) = args.get(1) {
+                let _ = std::fs::remove_file(p);
+            }
+        }
         Some("bench") => bench(&args[1..].join(" ")),
         Some("install") => install(args.iter().any(|a| a == "--login")),
         Some("uninstall") => uninstall(),
@@ -52,8 +88,23 @@ pub fn run() {
     }
 }
 
+/// Double-clicking `fsearch.exe` opens a console that closes the instant we
+/// return, which looks exactly like a crash. If we are the only process on that
+/// console, wait for a keypress instead.
+fn hold_console() {
+    let _ = std::io::stdout().flush();
+    if os::console_is_ours() {
+        eprint!("\nPress Enter to close...");
+        let _ = std::io::stderr().flush();
+        let mut s = String::new();
+        let _ = std::io::stdin().read_line(&mut s);
+    }
+}
+
 fn print_one(req: &serde_json::Value, raw: bool) {
+    crate::diag::trace(&format!("request: {req}"));
     let mut s = server::connect(&data_dir()).unwrap_or_else(|e| die(&format!("cannot reach daemon: {e}")));
+    crate::diag::trace("connected to the daemon");
     if writeln!(s, "{req}").and_then(|_| s.flush()).is_err() {
         die("lost the connection to the daemon");
     }
@@ -191,5 +242,7 @@ fn uninstall() {
 
 fn die(msg: &str) -> ! {
     eprintln!("fsearch: {msg}");
+    crate::diag::trace(&format!("fatal: {msg}"));
+    hold_console();
     std::process::exit(1)
 }

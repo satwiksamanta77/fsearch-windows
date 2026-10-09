@@ -1,0 +1,9 @@
+# Statically link the MSVC runtime. Without this the exe imports
+# VCRUNTIME140.dll and fails to start on any Windows that does not have the
+# Visual C++ Redistributable installed — which looks exactly like a crash on
+# launch. Static CRT makes the binary self-contained.
+#
+# This section only applies to MSVC builds, so a MinGW cross-build (see
+# cross.sh, which sets its linker through the environment) is unaffected.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]

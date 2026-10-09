@@ -13,9 +13,9 @@ use std::io::{self, Read, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
+use std::sync::{Arc, Mutex};
 
 pub const MAX_DEPTH: u32 = 96;
 
@@ -172,11 +172,20 @@ pub fn set_login(_exe: &Path, _on: bool) -> io::Result<()> {
 
 // ------------------------------------------------------------- change stream
 
-pub struct Stream(Arc<AtomicBool>);
+pub struct Stream {
+    stop: Arc<AtomicBool>,
+    failures: Arc<Mutex<Vec<String>>>,
+}
+
+impl Stream {
+    pub fn failures(&self) -> Vec<String> {
+        self.failures.lock().unwrap().clone()
+    }
+}
 
 impl Drop for Stream {
     fn drop(&mut self) {
-        self.0.store(true, Ordering::Relaxed);
+        self.stop.store(true, Ordering::Relaxed);
     }
 }
 
@@ -188,7 +197,7 @@ pub fn current_pos() -> crate::os::WatchPos {
 /// through `Live::apply_dir` directly.
 pub fn watch(_pos: crate::os::WatchPos, _latency: f64, tx: Sender<Vec<Event>>) -> Stream {
     let _ = tx.send(vec![Event { path: Vec::new(), flags: HISTORY_DONE, id: 0, vol: 0 }]);
-    Stream(Arc::new(AtomicBool::new(false)))
+    Stream { stop: Arc::new(AtomicBool::new(false)), failures: Arc::new(Mutex::new(Vec::new())) }
 }
 
 // ------------------------------------------------------------------- plumbing
@@ -270,3 +279,11 @@ pub(crate) fn _unused_join(a: &[u8], b: &[u8]) -> Vec<u8> {
 }
 
 pub fn utf8_console() {}
+
+pub fn console_is_ours() -> bool {
+    false
+}
+
+pub fn login_state() -> String {
+    "n/a on this platform".to_string()
+}

@@ -1,6 +1,6 @@
 [package]
 name = "fsearch"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "MIT"
 description = "Whole-disk file search for Windows: fuzzy names, typo tolerance, indexed content grep."
@@ -44,6 +44,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_RemoteDesktop",
     "Win32_System_WindowsProgramming",
     "Win32_System_Diagnostics_Debug",
+    "Win32_System_Kernel",
 ] }
 
 [profile.release]

@@ -16,6 +16,7 @@ pub fn socket_path(_dir: &Path) -> String {
 }
 
 pub fn serve(dir: PathBuf, home: String) {
+    crate::diag::trace(&format!("serve: data dir {}, home {home}", dir.display()));
     // One daemon per pipe. (The engine's own lock decides who writes the index:
     // an app embedding fsearch may own it while the daemon follows.)
     std::fs::create_dir_all(&dir).ok();
@@ -31,8 +32,10 @@ pub fn serve(dir: PathBuf, home: String) {
             return;
         }
     };
+    crate::diag::trace("serve: engine started, binding the pipe");
     let mut listener = os::listen().expect("bind pipe");
     eprintln!("{} listening on {}", crate::query::now_secs(), socket_path(&dir));
+    crate::diag::trace(&format!("serve: listening on {}", socket_path(&dir)));
     let mut last_err = Instant::now() - Duration::from_secs(60);
     loop {
         match listener.accept() {

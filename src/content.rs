@@ -339,7 +339,7 @@ pub struct Docs {
 }
 
 impl Docs {
-    fn push(&mut self, path: &[u8], size: u64, mtime: u32) {
+    pub fn push(&mut self, path: &[u8], size: u64, mtime: u32) {
         self.items.push((self.buf.len() as u32, path.len() as u32, size, mtime));
         self.buf.extend_from_slice(path);
     }
