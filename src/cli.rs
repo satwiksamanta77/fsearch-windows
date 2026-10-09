@@ -12,6 +12,7 @@ const USAGE: &str = "usage:
   fsearch stdio                 JSON lines on stdin/stdout
   fsearch serve                 run the daemon in the foreground
   fsearch status
+  fsearch ui                    open the explorer window
   fsearch doctor                check each subsystem and report which one fails
   fsearch -i                    interactive prompt (what double-clicking gives you)
   fsearch install [--login]      copy to %LOCALAPPDATA%\\Programs\\FSearch; --login also starts
@@ -74,6 +75,17 @@ fn dispatch(args: &[String]) {
         Some("stdio") => stdio(),
         Some("status") => print_one(&serde_json::json!({"op": "status"}), true),
         Some("doctor") => std::process::exit(crate::doctor::run()),
+        Some("ui") => {
+            // In-process when this IS the windowed binary; otherwise hand off
+            // to it so no console window comes along.
+            if std::env::current_exe().is_ok_and(|e| e.file_name().is_some_and(|n| n == crate::ui::ui_exe_name())) {
+                if let Err(e) = crate::ui::run() {
+                    die(&e);
+                }
+            } else if let Err(e) = crate::ui::launch_detached() {
+                die(&format!("could not start the explorer window: {e}"));
+            }
+        }
         // Hidden helpers for `doctor`: make a change from a *second* process,
         // which is what a search daemon actually observes. Undocumented on
         // purpose; there is no reason to type these by hand.
@@ -280,7 +292,7 @@ fn install(login: bool) {
     let dir = install_dir();
     std::fs::create_dir_all(&dir).unwrap_or_else(|e| die(&format!("mkdir {}: {e}", dir.display())));
     let mut installed = Vec::new();
-    for name in ["fsearch.exe", "fsearchd.exe"] {
+    for name in ["fsearch.exe", "fsearchd.exe", "fsearchui.exe"] {
         let src = std::env::current_exe().unwrap().with_file_name(name);
         if !src.is_file() {
             continue;

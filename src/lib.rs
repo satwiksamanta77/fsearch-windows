@@ -18,6 +18,7 @@ pub mod live;
 pub mod os;
 pub mod query;
 pub mod server;
+pub mod ui;
 pub mod walk;
 
 pub mod cli;

@@ -40,6 +40,7 @@ jobs:
           path: |
             target/release/fsearch.exe
             target/release/fsearchd.exe
+            target/release/fsearchui.exe
           if-no-files-found: error
 
   # The same suite, but `cfg(windows)` selects the real Win32 backend: bulk

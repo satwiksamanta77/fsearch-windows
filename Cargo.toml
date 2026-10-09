@@ -1,6 +1,6 @@
 [package]
 name = "fsearch"
-version = "0.1.2"
+version = "0.2.0"
 edition = "2024"
 license = "MIT"
 description = "Whole-disk file search for Windows: fuzzy names, typo tolerance, indexed content grep."
@@ -12,6 +12,10 @@ path = "src/lib.rs"
 [[bin]]
 name = "fsearch"
 path = "src/main.rs"
+
+[[bin]]
+name = "fsearchui"
+path = "src/bin/fsearchui.rs"
 
 [[bin]]
 name = "fsearchd"
@@ -31,6 +35,8 @@ serde_json = "1"
 libc = "0.2"
 
 [target.'cfg(windows)'.dependencies]
+egui = "0.29"
+eframe = { version = "0.29", default-features = false, features = ["default_fonts", "glow"] }
 windows-sys = { version = "0.61", features = [
     "Win32_Foundation",
     "Win32_Security",
@@ -45,10 +51,17 @@ windows-sys = { version = "0.61", features = [
     "Win32_System_WindowsProgramming",
     "Win32_System_Diagnostics_Debug",
     "Win32_System_Kernel",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Shell",
+    "Win32_Graphics_Gdi",
+    "Win32_System_Time",
 ] }
 
 [profile.release]
 opt-level = 3
-lto = "fat"
+# Thin, not fat: with the GUI in the graph a whole-program fat-LTO
+# merge can exhaust a CI runner's memory. Thin keeps cross-crate inlining
+# where it matters and costs a fraction of the peak.
+lto = "thin"
 codegen-units = 1
 debug = 1

@@ -131,6 +131,22 @@ pub fn init() {
     trace(&format!("fsearch {VERSION} starting; arch {}, logs in {}", std::env::consts::ARCH, log_dir().display()));
 }
 
+/// Tell the user something, even with no console attached. On Windows that is
+/// a message box; anywhere else it goes to stderr.
+pub fn crash_message(text: &str) {
+    record_crash("message shown to the user", text);
+    #[cfg(windows)]
+    {
+        let w: Vec<u16> = text.encode_utf16().chain(std::iter::once(0)).collect();
+        let mut t: Vec<u16> = "FSearch".encode_utf16().chain(std::iter::once(0)).collect();
+        unsafe {
+            windows_sys::Win32::UI::WindowsAndMessaging::MessageBoxW(std::ptr::null_mut(), w.as_ptr(), t.as_mut_ptr(), 0x10);
+        }
+    }
+    #[cfg(not(windows))]
+    eprintln!("{text}");
+}
+
 /// A human-readable line for `doctor` and for stderr when something fails.
 pub fn os_err(what: &str) -> String {
     let e = std::io::Error::last_os_error();

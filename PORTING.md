@@ -138,6 +138,21 @@ The algorithms are the original's; the data in them is Windows'.
   that dresses a temp folder up as `C:` so `cargo test` covers everything but
   the syscalls. Neither `fsevents.rs` nor `libc` exists any more.
 
+## The explorer window (`v0.2.0`)
+
+The CLI prints usage when run with no arguments, and a window that prints usage
+and closes reads as a crash, so `fsearchui.exe` exists: an egui-drawn explorer
+sharing the daemon's index. It is `#[cfg(windows)]` only — the host backend and
+its test suite never compile egui, which keeps `cargo test` a 5-second affair —
+and the binaries on other platforms say so instead of failing to link.
+
+Two things it had to get right to feel native rather than simulated: file
+operations go through the shell (`ShellExecute` to open, `SHFileOperation` with
+`FOF_ALLOWUNDO` so Delete reaches the Recycle Bin, `HKCR` for the Type column),
+and icons come from `SHGetFileInfo` rendered into an RGBA texture, with a
+generated extension badge as the fallback so a shell with no icon cache still
+shows a coloured, type-distinct list.
+
 ## Diagnostics
 
 A port whose platform layer nobody has run on the target OS needs to explain

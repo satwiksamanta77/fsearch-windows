@@ -34,6 +34,32 @@ with the constant factors set by your disk and `ReadDirectoryChangesW`.
 | first crawl of the disk | ~1 min, once |
 | restart | seconds: only folders whose mtime moved are relisted |
 
+## The explorer window
+
+`fsearchui.exe` (or `fsearch ui`, or double-clicking `fsearch.exe`) opens a real
+file-explorer window, drawn with egui:
+
+![browse](shots/gui-01-browse.png)
+
+- **Tabs**, a resizable **folder tree**, back/forward/up, an editable address bar
+- A **virtualised list** with per-type icons and Name / Size / Date modified /
+  Type columns, sortable by clicking a header; folders first
+- **Live search** in the same bar: type and results stream in from the daemon as
+  you type, with the folder each hit lives in and the query time in the status bar
+
+![search](shots/gui-03-results.png)
+
+- Right-click for Open / Open in a new tab / Show in Explorer / Cut / Copy /
+  Paste / New folder / Rename / Delete / Copy path / Properties
+- Keyboard: `Ctrl+T` new tab, `Ctrl+W` close, `Alt+←/→/↑` navigate, `F5`
+  refresh, `F2` rename, `Del` to the Recycle Bin, `Ctrl+C/X/V/A`, `Enter` open,
+  `Ctrl+L` or `Esc` clears the search
+- Delete goes to the Recycle Bin; open uses the shell's own associations; the
+  type column is read from `HKCR` the way Explorer reads it
+
+It shares the daemon's index, so search is the same ~1 ms it is everywhere
+else, and the list refreshes itself when the folder changes on disk.
+
 ## Interactive
 
 Double-clicking `fsearch.exe` — or running `fsearch -i` — drops you into a

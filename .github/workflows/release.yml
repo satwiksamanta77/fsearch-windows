@@ -49,10 +49,10 @@ jobs:
           $ver = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"').Matches[0].Groups[1].Value
           $stage = "fsearch-$ver-windows-x64"
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
-          Copy-Item target/release/fsearch.exe, target/release/fsearchd.exe, README.md, PORTING.md, LICENSE $stage/
+          Copy-Item target/release/fsearch.exe, target/release/fsearchd.exe, target/release/fsearchui.exe, README.md, PORTING.md, LICENSE $stage/
           Compress-Archive -Path "$stage/*" -DestinationPath "$stage.zip" -Force
           # Also ship the bare exes: some people just want to drop them on PATH.
-          Copy-Item target/release/fsearch.exe, target/release/fsearchd.exe .
+          Copy-Item target/release/fsearch.exe, target/release/fsearchd.exe, target/release/fsearchui.exe .
           Write-Output "STAGE=$stage" >> $env:GITHUB_ENV
           Get-FileHash "$stage.zip", fsearch.exe, fsearchd.exe -Algorithm SHA256 |
             ForEach-Object { "{0}  {1}" -f $_.Hash.ToLower(), (Split-Path $_.Path -Leaf) } |
@@ -66,6 +66,7 @@ jobs:
             ${{ env.STAGE }}.zip
             fsearch.exe
             fsearchd.exe
+            fsearchui.exe
             SHA256SUMS.txt
           if-no-files-found: error
 
@@ -87,6 +88,7 @@ jobs:
             *.zip
             fsearch.exe
             fsearchd.exe
+            fsearchui.exe
             SHA256SUMS.txt
           body: |
             Windows x64 build.
